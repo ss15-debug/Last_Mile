@@ -101,3 +101,51 @@ Consequences for the project:
 3. Is the coin-flip zone genuinely 50/50, or is there a weak signal left in it?
 4. Does `Cost_of_the_Product` still matter once discount is controlled for?
 5. Block F has exactly 3,666 rows, twice every other block's 1,833. Why?
+
+---
+
+## Gotcha 4: the file is ordered (found during game balancing)
+
+`Train.csv` is **not** in random order. Doomed orders are concentrated at the
+top of the file:
+
+```
+rows     0- 3000 : doomed ~93%   late 100.0%
+rows  3000- 4000 : doomed  12.5%  late  51.5%
+rows  4000-10999 : doomed  ~0.1%  late  ~43%
+```
+
+2,917 of the 2,919 doomed orders live in the first 8,000 rows. Only `ID` is
+monotonic, so this is not a simple sort on any one column — but the ordering
+is unmistakable.
+
+### Why it mattered
+
+The game design uses a train/test split: an 8,000-row queryable archive and a
+2,999-row live pool. Splitting sequentially gave a live pool containing **2
+doomed orders out of 2,999 (0.1%)**. Balance simulation showed expert play
+scoring exactly the same as knowing nothing — a $0 skill gap. The game was
+unwinnable by skill and it took a simulation to notice.
+
+### The fix
+
+Shuffle before splitting, with a fixed seed for reproducibility:
+
+```python
+rng = np.random.default_rng(42)
+shuffled = df.iloc[rng.permutation(len(df))].reset_index(drop=True)
+archive, live = shuffled.iloc[:8000], shuffled.iloc[8000:]
+```
+
+Live pool afterwards: 27.2% doomed, matching the file overall.
+
+### The general lesson
+
+Never split ordered data sequentially. If rows are sorted by anything —
+time, category, or an undocumented generation process like this one — a
+sequential split produces a test set drawn from a different distribution than
+the training set. Results then look fine in development and collapse in
+production. Always check, always shuffle, always fix the seed.
+
+Phase 4 must include a test asserting the live pool's doomed rate is within a
+few points of the overall rate. That test would have caught this immediately.

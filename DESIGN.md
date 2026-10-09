@@ -35,70 +35,131 @@ One shift = 20 orders, dealt one at a time.
 
 For each order the player sees every input field (warehouse block, shipping
 mode, weight, cost, discount, product importance, prior purchases, customer
-care calls, rating) and chooses:
+care calls, rating) and picks one of three actions:
 
-| Choice | Cost | Effect |
+| Action | Cost | Effect |
 |---|---|---|
-| **Ship standard** | free | outcome comes from the data |
+| **Reject** | -$10 restocking fee | order goes away, no risk |
+| **Ship** | free | outcome comes from the data |
 | **Expedite** | 1 token (5 per shift) | guaranteed on time |
 
-Then the outcome is revealed and the ledger updates.
+Each action is correct in a different situation, which is what makes it a
+decision rather than a button:
+
+- order looks doomed, tokens left -> **Expedite**
+- order looks doomed, out of tokens -> **Reject** (lose $10 instead of $50)
+- order looks ordinary -> **Ship** (save the token for something worse)
+
+Tokens are the scarce resource. There are 5 per shift and roughly 5.4 doomed
+orders in an average 20-order shift, so you cannot expedite your way out —
+some doomed orders have to be rejected instead.
 
 ## 4. Scoring
 
 | Event | Money |
 |---|---|
-| Order arrives on time | +$20 |
+| Order arrives on time | +$40 |
 | Order arrives late | -$50 |
+| Reject an order | -$10 |
 | Expedite | costs a token, not cash |
 
-Tokens are the scarce resource. That scarcity is what makes the decision real —
-if expediting were free or unlimited, the correct play would be to expedite
-everything and there would be no game.
+**Target to win a shift: $100.**
 
-Expected outcomes for a 20-order shift:
+These numbers were tuned by simulating 3,000 shifts per configuration against
+the real live-order pool (`scratchpad/balance2.py` methodology, reproduced in
+`analysis.py` in Phase 2). Average result per 20-order shift:
 
-- **Random token use:** ~5 tokens x 45% hit rate -> saves roughly $157
-- **Perfect play:** all 5 tokens on rule-matching orders -> saves $350
-- **Skill gap: about $193 per shift**
+| Strategy | Result |
+|---|---|
+| Ship everything (knows nothing) | **-$243** |
+| Expedite at random | -$3 |
+| Found one rule | **+$159** |
+| Found both rules | **+$197** |
 
-Target to win a shift: **$500**.
+A player who knows nothing loses badly. A player who guesses breaks even. Each
+rule discovered is worth real money. That progression is the game working.
+
+Note that the second rule is worth less than the first (+$38 vs +$162),
+because the discount rule covers more orders. That is fine — diminishing
+returns on investigation is realistic.
 
 ## 5. The Notebook (the learning mechanic)
 
-The player cannot win by guessing. They need evidence, so the game gives them a
-Notebook — a panel where they can ask questions of *historical* orders:
+The player cannot win by guessing, so the game gives them a Notebook. Per the
+wireframe (`docs/Notebook_Picture.png`) it is a two-page spread with tabs:
 
-> "Show me the late rate grouped by `Discount_offered`"
+- **LOGS** — every order from past shifts, with the action taken and outcome
+- **NOTES** — a free-text scratchpad for the player's own theories
+- **QUERY** — pick a column, see late rate grouped by it, as a table or bar chart
 
-The Notebook returns a small table or bar chart. The player forms a hypothesis,
-tests it, and eventually spots the cliff at discount 10.
+QUERY is where rules get discovered. Grouping by `Discount_offered` shows a
+flat line at ~46% that jumps to 100% at 11 and never comes back down.
 
-This is deliberately a train/test split, a real machine-learning concept:
+The Notebook reads only the **archive**, never live orders — see section 6.
 
-- **Rows 0-7999** -> historical archive, queryable in the Notebook
-- **Rows 8000-10998** -> live orders, dealt during shifts, never queryable
+## 6. The split (and why it must be shuffled)
 
-The player studies the past to predict the future, and cannot cheat by looking
-up the answer to an order they are currently holding.
+- **archive** (8,000 orders) — queryable in the Notebook
+- **live pool** (2,999 orders) — dealt during shifts, never queryable
 
-## 6. Win / lose
+This is a train/test split: study the past, predict the future, no cheating by
+looking up the order in your hand.
 
-- **Win a shift:** finish at $500 or more
-- **Lose a shift:** finish below $0
-- **Campaign:** 5 consecutive shifts; final score is the total
+**The file must be shuffled before splitting.** `Train.csv` is ordered — the
+first ~3,000 rows are 100% late and ~93% doomed, while everything after row
+4,000 is a near-pure coin flip. A naive sequential split put only 2 doomed
+orders into a live pool of 2,999, making the game unwinnable by skill: expert
+play scored identically to knowing nothing.
 
-A first-time player should lose. A player who has found one rule should break
-even. A player who has found both should win comfortably. If that progression
-does not happen in playtesting, the numbers in section 4 need retuning.
+Shuffle with a fixed seed so the split is reproducible:
+
+```python
+rng = np.random.default_rng(42)
+shuffled = df.iloc[rng.permutation(len(df))].reset_index(drop=True)
+archive, live = shuffled.iloc[:8000], shuffled.iloc[8000:]
+```
+
+After shuffling, the live pool is 27.2% doomed — matching the file overall.
+This is a hard requirement, and `tests/` must assert it in Phase 4.
 
 ## 7. Screens
 
+Wireframes: `docs/Shift_Screen.png`, `docs/Notebook_Picture.png`.
+Visual style is bureaucratic terminal — monospace text, box-drawing borders,
+no sprite art. This is an aesthetic choice and also a scope choice: the entire
+UI is rectangles and text, which removes the art pipeline from Phase 3.
+
 1. **Title** — name, Play, Notebook, Quit
-2. **Shift** — order card, ledger, token counter, two action buttons
-3. **Reveal** — outcome animation, running total
-4. **Notebook** — column picker, result table / bar chart
+2. **Shift** — see below
+3. **Reveal** — outcome stamped on the card, ledger updates
+4. **Notebook** — tabbed: LOGS / NOTES / QUERY
 5. **Shift summary** — final ledger, win or lose, next shift
+
+### Shift screen layout
+
+Top bar: ledger total on the left, remaining tokens on the right.
+Centre: the order card. Bottom: ledger quick-panel, then three buttons.
+
+The order card shows the raw data fields, unhighlighted — the fields ARE the
+clues, and the game never points at them:
+
+    +--------------------------------+
+    | ORDER #1042                    |
+    | ------------------------------ |
+    | Warehouse ....... F            |
+    | Mode ............ Ship         |
+    | Weight .......... 3,088 g      |
+    | Cost ............ $216         |
+    | Discount ........ 59%          |
+    | Importance ...... low          |
+    | Prior orders .... 2            |
+    | Care calls ...... 4            |
+    +--------------------------------+
+
+        [ REJECT ]  [ SHIP ]  [ EXPEDITE ]
+
+That example is a real row from the dataset, and it is doomed twice over —
+discount 59 and weight 3,088 both trip a rule. A new player cannot see that.
 
 ## 8. Architecture
 
